@@ -1,0 +1,526 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta http-equiv="X-UA-Compatible" content="IE=edge">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Encryptor</title>
+        <style>
+            * {
+                font-family: Arial, Helvetica, sans-serif;
+                font-size: 1.2rem;
+            }
+            :root {
+                --bg: black;
+                --button: rgb(104, 104, 104);
+                --text: white;
+                --progress: deepskyblue;
+                --lightProgress: red;
+                --filled: rgb(0, 125, 0);
+                --empty: rgb(125 , 0, 0);
+                --disabled: repeating-linear-gradient(-45deg, gray 0 10px, #ff7070 10px 20px);
+
+                color-scheme: dark;
+            }
+
+            @media (prefers-color-scheme: light) {
+                :root {
+                    --bg: white;
+                    --button: gray;
+                    --text: black;
+                    
+                    color-scheme: light;
+                }
+            }
+
+            body {
+                background: var(--bg);
+                color: var(--text);
+                margin: 0;
+                padding: 10px;
+            }
+            button {
+                background: var(--button);
+                border:0;
+                border-radius: 4px;
+                padding: 4px 0;
+            }
+            button:not([disabled]) {
+                cursor: pointer;
+            }
+            .progress {
+                border-radius: 15px;
+                overflow: hidden;
+                margin: 2em 0;
+                background: var(--lightProgress);
+            }
+            .progress-bar {
+                --p:0;
+                width: calc(var(--p) * 1%);
+                height: 30px;
+                background: var(--progress);
+                transition: all linear .3s;
+            }
+            .dragover .dragVisualizer {
+                outline: 20px dashed #33c434;
+                outline-offset: -50px;
+                height: 100vh;
+                width: 50vw;
+                box-sizing: border-box;
+                backdrop-filter: blur(3px);
+                position: absolute;
+                top:0;
+                left:0;
+                background: rgb(0 125 0 / .1);
+            }
+            .box {
+                display: flex;
+                justify-content: center;
+            }
+            .box-container {
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                width: 600px;
+                max-width: 95vw;
+            }
+            .box-container * {
+                display: flex;
+                width: 100%;
+                flex: 1 1 0px;
+                transition: all linear .2s;
+            }
+            .box-container > *
+            {
+                margin-bottom: .5em;
+                min-height: 33px;
+                flex-direction: row;
+                justify-content: space-around;
+            }
+            .disabled { 
+                height: 0px;
+                min-height: 0px;
+                visibility: collapse;
+                margin-bottom: 0px;
+            }
+            #RANDOMIZED_KEY_LABEL {
+                overflow: hidden;
+            }
+            [filled="true"] {
+                background-color: var(--filled);
+            }
+            [filled="false"] {
+                background-color: var(--empty);
+            }
+            [filled="disabled"] {
+                background-image: var(--disabled);
+            }
+            /* 
+            Process too Small
+            Not Centerd
+            */
+        </style>
+    </head>
+    <body onload="load()">
+        <div class="box">
+            <div class="box-container">
+                <button onclick="selectInputFile()" filled="false" id="inputFileSelector">
+                    Select Input File
+                </button>
+                <button onclick="selectOutputFile()" filled="false" id="outputFileSelector">
+                    Select Output File
+                </button>
+                <label for="PUBLIC_KEY">
+                    <span>Personal Key:</span>
+                    <input type="password" id="PUBLIC_KEY" value="">
+                </label>
+                <label for="PRIVATE_KEY">
+                    <span>File Key:</span>
+                    <input type="password" id="PRIVATE_KEY" value="">
+                </label>
+                <div id="RANDOMIZED_KEY_LABEL" class="disabled">
+                    <label for="RANDOMIZED_KEY">
+                        <span>Randomized Key:</span>
+                        <input type="password" id="RANDOMIZED_KEY" value="">
+                    </label>
+                </div>
+        
+                <button id="generate" disabled="true" text-enc="Encrypt" text-dec="Decrypt" onclick="createStreams()">
+                    Please Select File First
+                </button>
+            </div>
+        </div>
+        
+        <div class="progress">
+            <div class="progress-bar" id="progressbar">
+            <!-- <div class="progress-bar" id="progressbar" style="--p:0"> -->
+
+            </div>
+        </div>
+        <div class="dragVisualizer"></div>
+        <script>
+            // function load() {
+            //     window.addEventListener("drop", dropHandler);
+            //     window.addEventListener("dragover", dragOverHandler);
+            //     window.addEventListener("dragenter", dragOverHandler);
+            //     window.addEventListener("dragleave", dragLeaveHandler);
+            // }
+
+            const ENCRYPTION_SIGNATURE = "ncy";
+            let myEncryption=undefined;
+            let streams={get:undefined,set:undefined,length:0};
+            let fileInfo={name:undefined,size:undefined,encrypted:undefined,target:undefined};
+            
+            let progress={current:0,start:0,end:1};
+            // load on drop:
+
+            
+            async function selectInputFile() {
+                let handle = await window.showOpenFilePicker().then(a=>a).catch(a=>undefined);
+                if(!handle){return;}
+                let file = await handle[0].getFile();
+                let readerStream = file.stream();
+                let length = file.size;
+                fileInfo = {name:file.name,size:file.size,encrypted:file.name.endsWith("."+ENCRYPTION_SIGNATURE)};
+                streams.get=readerStream;
+                streams.length=length;
+                if(fileInfo.encrypted){
+                    fileInfo.target=fileInfo.name.split(".").slice(0,-1).join(".");
+                } else {
+                    fileInfo.target=fileInfo.name+"."+ENCRYPTION_SIGNATURE;
+                }
+                updateHandler();
+            }
+            // load on open:
+            // save after commited:
+            async function selectOutputFile() {
+                // showOpenFilePicker
+                let option = {
+                    suggestedName:fileInfo.target
+                }
+                if(!fileInfo.encrypted){option.type=[{description:'EncryptedFile',accept: {'application/octet-stream':['.'+ENCRYPTION_SIGNATURE]}}]}
+                let writeHandler = await window.showSaveFilePicker(option).then(a=>a).catch(a=>undefined);
+                if(!writeHandler){return;}
+                /** @type WritableStream */
+                let writerStream = await writeHandler.createWritable();
+
+                streams.set=writerStream;
+
+                updateHandler();
+            }
+
+
+            function load() {
+                myEncryption = createEncryptor();
+                document.querySelector('#PUBLIC_KEY').addEventListener('input',updateHandler);
+                document.querySelector('#PRIVATE_KEY').addEventListener('input',updateHandler);
+                document.querySelector('#RANDOMIZED_KEY').addEventListener('input',updateHandler);
+            }
+            
+            function updateHandler() {
+                if(document.querySelector("#generate").getAttribute("filled") == "disabled"){return false;}
+                console.log("updated");
+                document.querySelector("#inputFileSelector").setAttribute("filled",streams.get !== undefined?"true":"false");
+                document.querySelector("#outputFileSelector").setAttribute("filled",streams.set !== undefined?"true":"false");
+                document.querySelector("#RANDOMIZED_KEY_LABEL").classList[fileInfo.encrypted==false?"add":"remove"]("disabled");
+                document.querySelector("#generate").textContent = document.querySelector("#generate").getAttribute("text-"+(fileInfo.encrypted ? "dec" : "enc"));
+
+                let keyVal_PRIVATE = document.querySelector('#PRIVATE_KEY').value.length > 0;
+                let keyVal_PUBLIC = document.querySelector('#PUBLIC_KEY').value.length > 0;
+                let keyVal_RANDOMIZED = fileInfo.encrypted == false || document.querySelector('#RANDOMIZED_KEY').value.length > 0;
+                let enabled = streams.get && streams.set && keyVal_PRIVATE && keyVal_PUBLIC && keyVal_RANDOMIZED;
+                
+                document.querySelector("#generate")[!enabled?"setAttribute":"removeAttribute"]("disabled","disabled");
+            }
+
+            async function createStreams() {
+                const encryptor = createEncryptor();
+                let privateKey = document.querySelector('#PRIVATE_KEY').value;
+                let publicKey = document.querySelector('#PUBLIC_KEY').value;
+                let randomizedKey = document.querySelector('#RANDOMIZED_KEY').value-0;
+                encryptor.setPrivateKey(privateKey);
+                encryptor.setPublicKey(publicKey);
+                if(!fileInfo.encrypted){
+                    encryptor.setTarget_Encryption(true);
+                    // Generate Random Key
+                    let key = encryptor.getRandomizedKey();
+                    document.querySelector('#RANDOMIZED_KEY').setAttribute('type','number');
+                    document.querySelector('#RANDOMIZED_KEY').setAttribute('readonly','true');
+                    document.querySelector('#RANDOMIZED_KEY').value = key;
+                    document.querySelector('#RANDOMIZED_KEY').defaultValue = key;
+                    document.querySelector('#RANDOMIZED_KEY_LABEL').classList.remove('disabled');
+                } else {
+                    encryptor.setTarget_Decryption(true);
+                    // Set Random Key
+                    if (isNaN(randomizedKey)){
+                        return "";
+                    }
+                    encryptor.setRandomizedKey(randomizedKey);
+                }
+                
+                if(!encryptor.isReadyToEncrypt()){
+                    console.error("NO Not Ready");
+                    window._encryptor = encryptor;
+                    return;
+                }
+                document.querySelector("#generate").setAttribute("filled", "true");
+                const reader = streams.get.getReader();
+                const writer = streams.set.getWriter();
+                progress.end = streams.length;
+                progress.start = 0;
+                progress.current = 0;
+                let accessor = {};
+                accessor.read = async function read() {
+                    return await reader.read(1);
+                }
+                accessor.write = function write(byte) {
+                    let data = 0;
+                    if(Array.isArray(byte)){
+                        data = new Uint8Array(byte);
+                    } else {
+                        data = new Uint8Array([byte]);
+                    }
+                    writer.write(data);
+                }
+                accessor.flush = function flush(currentPosition) {
+                    progress.current = currentPosition;
+                }
+                animate();
+                let success = await encryptor.runEncryption(accessor.read,accessor.write,accessor.flush);
+                if (success) {
+                    let self = document.querySelector("#generate");
+                    self.textContent = "Successfully Generated File";
+                    self.setAttribute("filled", "disabled");
+                    self.setAttribute("disabled", "disabled");
+                    writer.close();
+                }
+                return accessor;
+            }
+
+            // function dragOverHandler(e=window.event) {
+            //     // console.log(e.target);
+            //     document.body.classList.add("dragover");
+            //     e.dataTransfer.dropEffect = "copy";
+            //     e.preventDefault();
+            // }
+            // function dragLeaveHandler(e=window.event) {
+            //     if(e.target == document.documentElement){return;}
+            //     // console.log(e.target);
+            //     document.body.classList.remove("dragover");
+            // }
+            // function dropHandler(e){
+            //     console.log(e);
+            //     e.preventDefault();
+            // }
+            
+            let i = 0;
+            async function animate() {
+                let dist = progress.current;
+                dist = Math.min(dist,progress.end);
+                dist /= Math.max(1,progress.end);
+                dist *= 100;
+                document.querySelector("#progressbar").style.cssText="--p:"+dist;
+                if(dist <= 100){
+                    window.requestAnimationFrame(animate);
+                }
+                // window.updateAnimation();
+            }
+            // window.requestAnimationFrame(updateAnimation);
+
+            
+            // ENCRYPTION GENERATOR
+            function createEncryptor(){
+                let _this = {};
+                /** 
+                 * @param {String} phrase File Password
+                 * @param {number} passcode Modulating Code
+                 * @param {boolean} nolock [optional] 
+                */
+                function* keyGenerator(phrase, passcode, nolock = false) {
+                    let last = 0;
+                    let index = 0;
+                    if (_this.PRIVATELOCK.length == 0) { nolock = true; }
+                    let cases = nolock ? 4 : 5;
+                    while (true) {
+                        let current = phrase.charCodeAt(index % phrase.length);
+                        if (index % passcode == 0) {
+                            switch ((last % cases) + nolock) {
+                                case 0:
+                                    last = (last ^ _this.PRIVATELOCK[(((current ^ index) % _this.PRIVATELOCK.length) + index) % _this.PRIVATELOCK.length]);
+                                    break;
+                                case 1:
+                                    last = (last + current) % 0xff;
+                                    break;
+                                case 2:
+                                    last = (Math.floor(last / current));
+                                    break;
+                                case 3:
+                                    last = (last * current) % 0xff;
+                                    break;
+                                case 4:
+                                    last = ((last + 0xff) - current) % 0xff;
+                                    break;
+                            }
+                            // last = (last + current) % 0xff;
+                        } else {
+                            last = last ^ current;
+                        }
+                        index++;
+                        if(last != 0){
+                            yield last;
+                        }
+                    }
+                }
+                /**
+                 * @param {String} phrase Global Password
+                 * @param {number} code Modulating Code (Randomness)
+                */
+                function generatePrivateKey(phrase, code) {
+                    let gen = _this.keyGenerator(phrase, code, true);
+                    return (",").repeat(0xff).split("").map(a => gen.next().value);
+                }
+                /** 
+                 * @param {String} key File Password
+                 * @param {number} code Modulating Code (Randomness)
+                 * @param {String} private Global Password
+                 * @param {number} samples Amount of Sample to check for insecurities 
+                */
+                function generateStatsFromGeneration(key, code, private, samples = 1E+6) {
+                    _this.generatePrivateKey(private, code);
+                    let gen = _this.keyGenerator(key, code);
+                    let diagram = [];
+                    for (let i = 1; i < samples; i++) {
+                        let v = gen.next().value;
+                        if (diagram[v]) {
+                            diagram[v].v++;
+                        } else {
+                            diagram[v] = { v: 1, c: v };
+                        }
+                    }
+                    diagram = diagram.reduce((p, c) => (p.push(c), p), []);
+                    return _this.checkInsecure(diagram);
+                }
+                /** 
+                 * @param {Array<{v:number,c:byte}>} stats 
+                 * @returs false if is secure, true otherwise
+                */
+                function checkInsecure(stats) {
+                    let max = stats.sort((a, b) => b.v - a.v)[0].v;
+                    if (stats.length > 10) {
+                        let check_rep1_threshhold = Math.floor(max * 0.90);
+                        if (stats.filter(a => a.v >= check_rep1_threshhold).length >= stats.length * 0.2) {
+                            return true;
+                        }
+                        let check_rep2_threshhold = Math.ceil(max * 0.001);
+                        if (stats.filter(a => a.v <= check_rep2_threshhold).length >= stats.length * 0.6) {
+                            return true;
+                        }
+                        let groups_threshhold = Math.ceil(max * 0.01);
+                        let groups_count_threshold = 6;
+                        let currentGroups = [];
+                        stats.forEach(v => {
+                            if (currentGroups.length >= groups_count_threshold) {
+                                return true; // skip if toomany groups 
+                            }
+                            let index = currentGroups.findIndex(a => Math.abs(a.value - v.v) <= groups_threshhold);
+                            if (currentGroups && (index != -1)) {
+                                currentGroups[index].amount++;
+                            } else {
+                                currentGroups.push({ value: v.v, amount: 1 });
+                            }
+                        });
+                        if (currentGroups.length < groups_count_threshold) {
+                            return true;
+                        }
+                    } else {
+                        return true;
+                    }
+
+                    return false;
+                }
+                function getRandomCode() {
+                    let CODEPHRASE = undefined;
+                    let MAIN_KEYPHRASE = _this.KEYS.PUBLIC;
+                    let PAIR_KEYPHRASE = _this.KEYS.PRIVATE;
+                    _this.KEYS
+                    for(i=30;i>0;i--){
+                        CODEPHRASE = Math.ceil(Math.random() * MAIN_KEYPHRASE.length * 1.5);
+                        if(CODEPHRASE==0){continue;}
+                        if(!generateStatsFromGeneration(PAIR_KEYPHRASE,CODEPHRASE,MAIN_KEYPHRASE,1E+6)){
+                            break;
+                        } else {
+                            _this.debug("// DEBUG! Failed with number :"+CODEPHRASE)
+                        }
+                        if(i==1){
+                            return false;
+                        }
+                    }
+                    _this.KEYS.RANDOMIZER = CODEPHRASE;
+                    return CODEPHRASE;
+                }
+                function isReady() {
+                    return !(!_this.KEYS.PRIVATE?.length||!_this.KEYS.PUBLIC?.length||!_this.KEYS.RANDOMIZER);
+                }
+                async function runEncryption(readByte,writeByte,progressCallback) {
+                    if (!_this.isReady()){
+                        throw new TypeError("Wrong Invocation! Can not invoke encryption with missing arguments!");
+                    }
+                    let progressCounter = 0;
+                    _this.generatePrivateKey(_this.KEYS.PUBLIC,_this.KEYS.RANDOMIZER);
+                    let generator = _this.keyGenerator(_this.KEYS.PRIVATE,_this.KEYS.RANDOMIZER);
+                    let reader=undefined;
+                    while(reader=await readByte(),reader&&!reader.done) {
+                        let collector = [];
+                        for(let value of reader.value){
+                            let operandByte = generator.next().value;
+                            collector.push(value^operandByte);
+                        }
+                        writeByte(collector);
+                        progressCounter += collector.length;
+                        progressCallback(progressCounter);
+                    }
+                    return true;
+                }
+                _this.debug=console.log;
+                _this.PRIVATELOCK = [];
+                _this.keyGenerator = keyGenerator;
+                _this.generatePrivateKey = generatePrivateKey;
+                _this.generateStatsFromGeneration = generateStatsFromGeneration;
+                _this.checkInsecure = checkInsecure;
+                _this.getRandomCode = getRandomCode;
+                _this.isReady = isReady;
+                _this.runEncryption = runEncryption;
+                _this.ENCRYPTION_MODES={UNKNOWN:undefined,ENCRYPT:Symbol("ENCRYPT"),DECRYPT:Symbol("DECRYPT")};
+                _this.KEYS = {PRIVATE:undefined, PUBLIC:undefined, RANDOMIZER:undefined, ENCRYPTION_MODE:_this.ENCRYPTION_MODES.UNKNOWN};
+                
+                // split contexts
+                return {
+                    setTarget_Encryption: function(value){if(value){_this.KEYS.ENCRYPTION_MODE=_this.ENCRYPTION_MODES.ENCRYPT}},
+                    setTarget_Decryption: function(value){if(value){_this.KEYS.ENCRYPTION_MODE=_this.ENCRYPTION_MODES.DECRYPT}},
+                    setPrivateKey: function(value){_this.KEYS.PRIVATE=value;},
+                    setPublicKey: function(value){_this.KEYS.PUBLIC=value;},
+                    setRandomizedKey: function(value){
+                        if(_this.ENCRYPTION_MODES.DECRYPT==_this.KEYS.ENCRYPTION_MODE){
+                            _this.KEYS.RANDOMIZER = value
+                        }else{
+                            throw new Error("Can not set RandomizedKey in non Decrypt mode");
+                        }
+                    },
+                    getRandomizedKey: function(){
+                        if(undefined===_this.KEYS.RANDOMIZER){
+                            if(false==_this.getRandomCode()) {
+                                window.alert("Sorry, We could not Generate a secure key from your entered Passwords. Please try again!");
+                                throw new EvalError("Could not Generate a secure key from entered Passwords. Aborting...");
+                            }
+                        }
+                        return _this.KEYS.RANDOMIZER;
+                    },
+                    isReadyToEncrypt: function(){return _this.isReady();},
+                    runEncryption: function(readMethod,writeMethod,progressCallback){
+                        return _this.runEncryption(readMethod,writeMethod,progressCallback);
+                    },
+                }
+            }
+        </script>
+    </body>
+</html>
